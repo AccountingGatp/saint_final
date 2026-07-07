@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import multer from "multer";
 import { buildWorkbookBuffer, buildImportBuffer } from "./excel.js";
 
@@ -11,6 +12,7 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
 });
 
+app.use(cors());
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
