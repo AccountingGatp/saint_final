@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://saint-final-api.vercel.app";
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
