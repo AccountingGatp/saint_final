@@ -40,17 +40,18 @@ async function fetchRate(isoDate, to = "AUD", base = "USD") {
   }
 }
 
-/** Paint a worksheet's header row (row 1) blue with white bold centered text. */
+/** Paint a worksheet's header row (row 1) Excel blue with white bold centered text. */
 function styleHeader(worksheet) {
   const style = {
     fill: { patternType: "solid", fgColor: { rgb: "FF4472C4" } },
     font: { bold: true, color: { rgb: "FFFFFFFF" } },
     alignment: { horizontal: "center", vertical: "center" },
   };
-  const range = XLSX.utils.decode_range(worksheet["!ref"]);
+  const range = XLSX.utils.decode_range(worksheet["!ref"] || "A1");
   for (let c = range.s.c; c <= range.e.c; c++) {
     const addr = XLSX.utils.encode_cell({ r: 0, c });
-    if (worksheet[addr]) worksheet[addr].s = style;
+    if (!worksheet[addr]) worksheet[addr] = { t: "s", v: "" };
+    worksheet[addr].s = style;
   }
 }
 
@@ -156,6 +157,7 @@ export async function buildWorkbookBuffer(inputBuffer, { date = "06/26", currenc
   const rows = readExcelBuffer(inputBuffer);
 
   const inputSheet = XLSX.utils.json_to_sheet(rows);
+  styleHeader(inputSheet);
   const sheet1 = XLSX.utils.json_to_sheet(buildSheet1(rows, date));
   styleHeader(sheet1);
   const summary = await buildSheet2(rows, currency);

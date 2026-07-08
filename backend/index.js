@@ -1,73 +1,102 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import multer from "multer";
 import { buildWorkbookBuffer, buildImportBuffer } from "./excel.js";
+import { uploadBuffer, downloadFile, getDownloadUrl } from "./storage/b2.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Keep uploads in memory only — nothing is written to disk.
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
 app.use(cors());
+app.use(express.json());
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.post("/process", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded (expected field 'file')." });
+      return res
+        .status(400)
+        .json({ error: "No file uploaded (expected field 'file')." });
     }
 
-    // Optional overrides from the form; fall back to the script defaults.
     const date = req.body.date || "06/26";
     const currency = req.body.currency || "AUD";
 
-    const outBuffer = await buildWorkbookBuffer(req.file.buffer, { date, currency });
+    const outBuffer = await buildWorkbookBuffer(req.file.buffer, {
+      date,
+      currency,
+    });
 
     const base = (req.file.originalname || "workbook").replace(/\.[^.]+$/, "");
     const outName = `${base}-output.xlsx`;
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
-    return res.send(outBuffer);
+    const stored = await uploadBuffer(outBuffer, {
+      type: "output",
+      fileName: outName,
+    });
+
+    return res.json({
+      fileId: stored.fileId,
+      fileName: stored.fileName,
+      downloadUrl: stored.downloadUrl,
+    });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: err.message || "Failed to process file." });
+    return res
+      .status(500)
+      .json({ error: err.message || "Failed to process file." });
   }
 });
 
-// Turn a previously generated output workbook into an accounting import workbook.
-app.post("/import", upload.single("file"), async (req, res) => {
+app.post("/import", async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded (expected field 'file')." });
+    const { fileId } = req.body;
+
+    if (!fileId) {
+      return res.status(400).json({ error: "fileId is required." });
     }
 
-    const outBuffer = buildImportBuffer(req.file.buffer);
+    const { buffer, fileName } = await downloadFile("output", fileId);
+    const outBuffer = buildImportBuffer(buffer);
 
-    const base = (req.file.originalname || "workbook")
-      .replace(/\.[^.]+$/, "")
-      .replace(/-output$/, "");
+    const base = fileName.replace(/\.[^.]+$/, "").replace(/-output$/, "");
     const outName = `${base}-import.xlsx`;
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
-    return res.send(outBuffer);
+    const stored = await uploadBuffer(outBuffer, {
+      type: "import",
+      fileName: outName,
+    });
+
+    return res.json({
+      fileId: stored.fileId,
+      fileName: stored.fileName,
+      downloadUrl: stored.downloadUrl,
+    });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: err.message || "Failed to build import file." });
+    return res
+      .status(500)
+      .json({ error: err.message || "Failed to build import file." });
+  }
+});
+
+app.get("/files/:fileId/download", async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const type = req.query.type === "import" ? "import" : "output";
+    const downloadUrl = await getDownloadUrl(type, fileId);
+
+    return res.json({ downloadUrl });
+  } catch (err) {
+    console.error(err);
+    return res.status(404).json({ error: "File not found." });
   }
 });
 

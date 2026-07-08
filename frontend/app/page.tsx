@@ -12,6 +12,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+// const API_URL =
+//   process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
 const API_URL =  "https://saint-final-api.vercel.app";
 
 function formatSize(bytes: number) {
@@ -20,23 +23,22 @@ function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+type StoredFile = {
+  fileId: string;
+  fileName: string;
+  downloadUrl: string;
+};
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [result, setResult] = useState<{
-    url: string;
-    name: string;
-    blob: Blob;
-  } | null>(null);
+  const [result, setResult] = useState<StoredFile | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
-  const [importResult, setImportResult] = useState<{
-    url: string;
-    name: string;
-  } | null>(null);
+  const [importResult, setImportResult] = useState<StoredFile | null>(null);
 
   function pickFile() {
     inputRef.current?.click();
@@ -44,18 +46,12 @@ export default function Home() {
 
   function clearImport() {
     setImportError(null);
-    setImportResult((prev) => {
-      if (prev) window.URL.revokeObjectURL(prev.url);
-      return null;
-    });
+    setImportResult(null);
   }
 
   function clearResult() {
     clearImport();
-    setResult((prev) => {
-      if (prev) window.URL.revokeObjectURL(prev.url);
-      return null;
-    });
+    setResult(null);
   }
 
   function selectFile(f: File | null) {
@@ -85,7 +81,6 @@ export default function Home() {
     setError(null);
     clearResult();
 
-    
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -95,24 +90,17 @@ export default function Home() {
         body: formData,
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        let msg = `Request failed (${res.status})`;
-        try {
-          const data = await res.json();
-          if (data?.error) msg = data.error;
-        } catch {
-          /* response was not JSON */
-        }
-        throw new Error(msg);
+        throw new Error(data?.error || `Request failed (${res.status})`);
       }
 
-      const disposition = res.headers.get("Content-Disposition") || "";
-      const match = disposition.match(/filename="?([^"]+)"?/);
-      const outName = match?.[1] || "output.xlsx";
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      setResult({ url, name: outName, blob });
+      setResult({
+        fileId: data.fileId,
+        fileName: data.fileName,
+        downloadUrl: data.downloadUrl,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -126,31 +114,23 @@ export default function Home() {
     clearImport();
 
     try {
-      const formData = new FormData();
-      formData.append("file", result.blob, result.name);
-
       const res = await fetch(`${API_URL}/import`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId: result.fileId }),
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        let msg = `Request failed (${res.status})`;
-        try {
-          const data = await res.json();
-          if (data?.error) msg = data.error;
-        } catch {
-        }
-        throw new Error(msg);
+        throw new Error(data?.error || `Request failed (${res.status})`);
       }
 
-      const disposition = res.headers.get("Content-Disposition") || "";
-      const match = disposition.match(/filename="?([^"]+)"?/);
-      const outName = match?.[1] || "import.xlsx";
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      setImportResult({ url, name: outName });
+      setImportResult({
+        fileId: data.fileId,
+        fileName: data.fileName,
+        downloadUrl: data.downloadUrl,
+      });
     } catch (err) {
       setImportError(
         err instanceof Error ? err.message : "Something went wrong."
@@ -162,7 +142,6 @@ export default function Home() {
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-slate-50 text-slate-900">
-      {/* ambient gradient backdrop */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -top-32 left-1/2 h-96 w-96 -translate-x-1/2 rounded-full bg-indigo-300/40 blur-3xl" />
         <div className="absolute bottom-0 right-0 h-80 w-80 rounded-full bg-sky-300/40 blur-3xl" />
@@ -170,7 +149,6 @@ export default function Home() {
 
       <div className="relative flex min-h-screen items-center justify-center p-4">
         <div className="w-full max-w-md">
-          {/* brand */}
           <div className="mb-8 text-center">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-sky-400 shadow-lg shadow-indigo-500/30">
               <FileSpreadsheet className="h-7 w-7 text-white" />
@@ -179,12 +157,10 @@ export default function Home() {
               SAINT
             </h1>
             <p className="mt-2 text-sm text-slate-500">
-              Upload an Excel file — processed and returned instantly.
-              Nothing is stored.
+              Upload an Excel file — processed and stored securely in the cloud.
             </p>
           </div>
 
-          {/* card */}
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/60">
             <input
               ref={inputRef}
@@ -248,28 +224,27 @@ export default function Home() {
             {result ? (
               <>
                 <a
-                  href={result.url}
-                  download={result.name}
+                  href={result.downloadUrl}
+                  download={result.fileName}
                   className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-gradient-to-r from-emerald-500 to-green-500 text-sm font-medium text-white transition-colors hover:from-emerald-500/90 hover:to-green-500/90"
                 >
                   <Download className="h-4 w-4" />
-                  Download {result.name}
+                  Download {result.fileName}
                 </a>
                 <div className="mt-3 flex items-center justify-center gap-2 text-sm text-emerald-600">
                   <CheckCircle2 className="h-4 w-4" />
                   Ready — click above to download.
                 </div>
 
-                {/* step 2: build the accounting import file from the output */}
                 <div className="mt-4 border-t border-slate-100 pt-4">
                   {importResult ? (
                     <a
-                      href={importResult.url}
-                      download={importResult.name}
+                      href={importResult.downloadUrl}
+                      download={importResult.fileName}
                       className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-gradient-to-r from-violet-500 to-fuchsia-500 text-sm font-medium text-white transition-colors hover:from-violet-500/90 hover:to-fuchsia-500/90"
                     >
                       <Download className="h-4 w-4" />
-                      Download {importResult.name}
+                      Download {importResult.fileName}
                     </a>
                   ) : (
                     <Button
@@ -320,7 +295,7 @@ export default function Home() {
           </div>
 
           <p className="mt-6 text-center text-xs text-slate-400">
-            Processed in memory · never saved to disk
+            Files stored in Backblaze B2 · secure cloud storage
           </p>
         </div>
       </div>
