@@ -28,13 +28,104 @@ function parseDate(orderTime) {
   return { md: `${month}/${day}`, iso: `${m[1]}-${month}-${day}` };
 }
 
-/** USD -> target rate for a date from the free, keyless Frankfurter API. Null on failure. */
+// --------------------------------- FX (RBA) ---------------------------------
+
+// RBA table F11.1 (Exchange Rates - Daily). Free, keyless, official. Covers the
+// last few years of trading days. Rates are quoted as "A$1 = <foreign currency>".
+const RBA_CSV_URL = "https://www.rba.gov.au/statistics/tables/csv/f11.1-data.csv";
+const RBA_MONTHS = {
+  Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
+  Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
+};
+
+let rbaTablePromise = null; // memoized: fetch + parse the CSV once per process.
+
+/** "15-Jun-2026" -> "2026-06-15", or null if unrecognized. */
+function parseRbaDate(cell) {
+  const m = String(cell).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+  if (!m) return null;
+  const mm = RBA_MONTHS[m[2][0].toUpperCase() + m[2].slice(1).toLowerCase()];
+  return mm ? `${m[3]}-${mm}-${m[1].padStart(2, "0")}` : null;
+}
+
+/**
+ * Load RBA F11.1 into { dates: [isoAsc], byDate: Map(iso -> Map(code -> value)) }.
+ * `code` is the foreign-currency code (USD, CNY, EUR, ...) from the "A$1=<code>"
+ * header columns; each value is units of that currency per A$1.
+ */
+async function loadRbaTable() {
+  if (!rbaTablePromise) {
+    rbaTablePromise = (async () => {
+      // RBA blocks requests without a browser-like User-Agent (403 otherwise).
+      const res = await fetch(RBA_CSV_URL, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; SaintFX/1.0)" },
+      });
+      if (!res.ok) throw new Error(`RBA fetch failed: HTTP ${res.status}`);
+      const text = await res.text();
+      const lines = text.replace(/^﻿/, "").split(/\r?\n/);
+
+      let codes = null; // column index -> currency code
+      const byDate = new Map();
+      for (const line of lines) {
+        const cells = line.split(",");
+        if (cells[0] === "Title") {
+          codes = cells.map((c) => {
+            const m = /^A\$1=([A-Za-z]{3})$/.exec(c.trim());
+            return m ? m[1].toUpperCase() : null;
+          });
+          continue;
+        }
+        const iso = parseRbaDate(cells[0]);
+        if (!iso || !codes) continue;
+        const rowMap = new Map();
+        for (let i = 1; i < cells.length; i++) {
+          const code = codes[i];
+          const v = cells[i]?.trim();
+          if (code && v) {
+            const n = Number(v);
+            if (Number.isFinite(n)) rowMap.set(code, n);
+          }
+        }
+        byDate.set(iso, rowMap);
+      }
+      if (!byDate.size) throw new Error("RBA table parsed to zero rows.");
+      return { dates: [...byDate.keys()].sort(), byDate };
+    })().catch((err) => {
+      rbaTablePromise = null; // allow a later retry
+      throw err;
+    });
+  }
+  return rbaTablePromise;
+}
+
+/** Units of `code` per A$1 for a given RBA row map (AUD itself is 1). */
+function rbaValue(rowMap, code) {
+  return code === "AUD" ? 1 : rowMap.get(code) ?? null;
+}
+
+/**
+ * base -> to conversion rate for a date, from the RBA F11.1 daily table.
+ * Falls back to the most recent trading day on-or-before the requested date
+ * (RBA publishes business days only). Null when unavailable.
+ *
+ * A$1 = value(base) base = value(to) to  =>  1 base = value(to)/value(base) to.
+ */
 async function fetchRate(isoDate, to = "AUD", base = "USD") {
   try {
-    const res = await fetch(`https://api.frankfurter.dev/v1/${isoDate}?base=${base}&symbols=${to}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.rates?.[to] ?? null;
+    const { dates, byDate } = await loadRbaTable();
+    let key = byDate.has(isoDate) ? isoDate : null;
+    if (!key) {
+      // nearest trading day on-or-before isoDate (dates sorted ascending ISO)
+      for (let i = dates.length - 1; i >= 0; i--) {
+        if (dates[i] <= isoDate) { key = dates[i]; break; }
+      }
+    }
+    if (!key) return null;
+    const rowMap = byDate.get(key);
+    const vBase = rbaValue(rowMap, base.toUpperCase());
+    const vTo = rbaValue(rowMap, to.toUpperCase());
+    if (!vBase || vTo === null) return null;
+    return vTo / vBase;
   } catch {
     return null;
   }
